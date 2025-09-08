@@ -37,30 +37,42 @@
 </div>
 
 <!-- Modal -->
-<div class="modal fade" id="createNotebookModal" tabindex="-1" aria-labelledby="createNotebookLabel" aria-hidden="true">
-  <div class="modal-dialog">
-    <div class="modal-content">
-      <form method="POST" action="{% url 'create_notebook' project.id %}">
-        {% csrf_token %}
-        <div class="modal-header">
-          <h5 class="modal-title" id="createNotebookLabel">Create New Notebook</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-        </div>
-        <div class="modal-body">
-          <div class="mb-3">
-            <label for="notebook-name" class="form-label">Notebook Name</label>
-            <input type="text" class="form-control" id="notebook-name" name="name" required>
+<div class="modal fade" id="createNotebookModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <form method="post" action="{% url 'create_notebook' project.id %}">
+          {% csrf_token %}
+          <div class="modal-header">
+            <h5 class="modal-title">Create Notebook</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button type="submit" class="btn btn-primary">Create</button>
-          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-        </div>
-      </form>
+          <div class="modal-body">
+            {{ form.as_p }}
+            {% if form.errors %}
+              <div class="alert alert-danger mt-2">
+                {{ form.errors }}
+              </div>
+            {% endif %}
+          </div>
+          <div class="modal-footer">
+            <button type="submit" class="btn btn-primary">Create</button>
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          </div>
+        </form>
+      </div>
     </div>
   </div>
-</div>
+  
 
 <!-- Bootstrap JS -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+{% if form.errors %}
+<script>
+  document.addEventListener("DOMContentLoaded", function() {
+    var notebookModal = new bootstrap.Modal(document.getElementById('createNotebookModal'));
+    notebookModal.show();
+  });
+</script>
+{% endif %}
 {% endblock %}
