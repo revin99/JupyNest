@@ -81,9 +81,7 @@ def create_notebook(request,project_id):
             notebooks = Notebook.objects.filter(project=project)
             return render(request, 'project_detail.html', {'project': project, 'notebooks': notebooks, 'form': form})
     else:
-        form = NotebookForm(project=project)
-        notebooks = Notebook.objects.filter(project=project)
-        return render(request,'project_detail.html',{'project': project, 'notebooks': notebooks, 'form': form})
+        return redirect('project_detail', project_id=project.id)
 
 @login_required
 def delete_project(request, project_id):
