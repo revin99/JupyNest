@@ -65,10 +65,11 @@ def create_notebook(request,project_id):
     project = get_object_or_404(Project, id=project_id, user=request.user)
 
     if request.method == 'POST':
-        form = NotebookForm(request.POST, project=project)
+        form = NotebookForm(request.POST, project=project , user = request.user)
         if form.is_valid():
             notebook = form.save(commit=False)
             notebook.project = project
+            notebook.user = request.user
             file_path = os.path.join(BASE_NOTEBOOK_DIR, str(project.id), f"{notebook.name}.ipynb")
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             nb = v4.new_notebook()

@@ -16,6 +16,7 @@
                 <div class="card-body d-flex flex-column">
                     <h5 class="card-title">{{ project.name }}</h5>
                     <p class="card-text">Created: {{ project.created_at|date:"M d, Y H:i" }}</p>
+                    <p class="card-text">Owner: {{project.user}}</p>
                     <div class="mt-auto">
                         <a href="{% url 'project_detail' project.id %}" class="btn btn-success w-100">Open Project</a>
                         <form method="POST" action="{% url 'delete_project' project.id %}" class="d-inline">

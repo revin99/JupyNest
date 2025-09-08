@@ -21,12 +21,10 @@ class NotebookForm(forms.ModelForm):
     class Meta:
         model = Notebook
         fields = ['name']
-        widgets = {
-            'name': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Notebook name'}),
-        }
 
     def __init__(self, *args, **kwargs):
         self.project = kwargs.pop('project', None)
+        self.user = kwargs.pop('user', None)
         super().__init__(*args, **kwargs)
 
     def clean_name(self):
