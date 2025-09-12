@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import UserCreationForm
-from .models import Project, Notebook
+from .models import Project, Notebook , UserProfile , BusinessGroup
 import os
 from nbformat import v4,read,write
 from nbclient import NotebookClient
@@ -27,7 +27,8 @@ def signup(request):
 
 @login_required
 def dashboard(request):
-    projects = Project.objects.filter(user=request.user) #queries the db for all projects owned by the current user
+    user_profile = request.user.userprofile #gets the UserProfile associated with the current user
+    projects = Project.objects.filter(group=user_profile.group) #queries the db for all projects owned by the current user
     form = ProjectForm(user=request.user) #creates an instance of the ProjectForm, passing the current user to it
     return render(request, 'dashboard.html', {'projects': projects ,'form':form}) #renders the dashboard.html template with the user's projects
 
@@ -50,7 +51,8 @@ def create_project(request):
 
 @login_required
 def project_detail(request, project_id):
-    project = get_object_or_404(Project, id=project_id, user=request.user)
+    user_profile = request.user.userprofile
+    project = get_object_or_404(Project, id=project_id, group=user_profile.group)
     notebooks = Notebook.objects.filter(project=project)
     form = NotebookForm(project=project)
 
