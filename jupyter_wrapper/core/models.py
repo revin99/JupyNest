@@ -1,7 +1,11 @@
 from django.db import models
-from django.contrib.auth.models import User
+from django.contrib.auth.models import AbstractUser
+from django.conf import settings
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+
+class CustomUser(AbstractUser):
+    group = models.ForeignKey('BusinessGroup', on_delete=models.SET_NULL, null=True, blank=True)
 
 class BusinessGroup(models.Model):
     name = models.CharField(max_length=255)
@@ -11,10 +15,16 @@ class BusinessGroup(models.Model):
         return self.name
 
 class Project(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     group = models.ForeignKey(BusinessGroup, on_delete=models.CASCADE, null=True, blank=True) #project belongs to this group
     name = models.CharField(max_length=255)
     created_at = models.DateTimeField(auto_now_add=True)
+    
+    def save(self, *args, **kwargs):
+        # Auto-assign project to the same group as the user
+        if not self.group and hasattr(self.user, "group"):
+            self.group = self.user.group
+        super().save(*args, **kwargs)
 
     class Meta:
         unique_together = ('group','name') #ensures that within a given business group, project names are unique
@@ -23,7 +33,7 @@ class Project(models.Model):
         return self.name
     
 class Notebook(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     project = models.ForeignKey(Project, on_delete=models.CASCADE)
     name = models.CharField(max_length=255)
     file_path = models.CharField(max_length=1024)
@@ -31,17 +41,3 @@ class Notebook(models.Model):
 
     def __str__(self):
         return self.name
-
-class UserProfile(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE)
-    group = models.ForeignKey(BusinessGroup, on_delete=models.CASCADE, null=True, blank=True)
-
-    def __str__(self):
-        return self.user.username
-    
-@receiver(post_save, sender=User)
-def create_user_profile(sender, instance, created, **kwargs):
-    if created:
-        # Assign to a default group (must exist)
-        default_group, _ = BusinessGroup.objects.get_or_create(name="Default")
-        UserProfile.objects.create(user=instance, group=default_group)

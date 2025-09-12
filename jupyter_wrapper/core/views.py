@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import UserCreationForm
-from .models import Project, Notebook , UserProfile , BusinessGroup
+from .models import Project, Notebook , BusinessGroup
 import os
 from nbformat import v4,read,write
 from nbclient import NotebookClient
@@ -27,8 +27,11 @@ def signup(request):
 
 @login_required
 def dashboard(request):
-    user_profile = request.user.userprofile #gets the UserProfile associated with the current user
-    projects = Project.objects.filter(group=user_profile.group) #queries the db for all projects owned by the current user
+    group=None
+    if hasattr(request.user,"group"):
+        group = request.user.group
+    
+    projects = Project.objects.filter(group=group) #queries the db for all projects owned by the current user
     form = ProjectForm(user=request.user) #creates an instance of the ProjectForm, passing the current user to it
     return render(request, 'dashboard.html', {'projects': projects ,'form':form}) #renders the dashboard.html template with the user's projects
 
@@ -51,8 +54,10 @@ def create_project(request):
 
 @login_required
 def project_detail(request, project_id):
-    user_profile = request.user.userprofile
-    project = get_object_or_404(Project, id=project_id, group=user_profile.group)
+    group=None
+    if hasattr(request.user,"group"):
+        group = request.user.group
+    project = get_object_or_404(Project, id=project_id, group=group)
     notebooks = Notebook.objects.filter(project=project)
     form = NotebookForm(project=project)
 
@@ -88,7 +93,7 @@ def create_notebook(request,project_id):
 
 @login_required
 def delete_project(request, project_id):
-    project = get_object_or_404(Project, id=project_id, user=request.user)
+    project = get_object_or_404(Project, id=project_id, group=request.user.group)
 
     # Delete project folder (all notebooks inside)
     project_slug = project.name.replace(" ", "_")  # or use slugify if you prefer
