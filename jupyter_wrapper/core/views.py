@@ -1,6 +1,7 @@
 from django.shortcuts import render
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import UserCreationForm
+from django.http import JsonResponse
 from .models import Project, Notebook , BusinessGroup
 import os
 from nbformat import v4,read,write
@@ -9,6 +10,8 @@ from django.shortcuts import get_object_or_404, redirect
 from django.conf import settings
 import shutil
 from .forms import ProjectForm, NotebookForm
+from django.views.decorators.csrf import csrf_exempt
+import json
 
 
 BASE_NOTEBOOK_DIR = os.path.join(os.getcwd(), "user_notebooks")
@@ -117,3 +120,55 @@ def delete_notebook(request, notebook_id):
     notebook.delete()
     return redirect('project_detail', project_id=notebook.project.id)
 
+@login_required
+def schedule_notebook(request):
+    """
+    Handle the schedule modal form submission.
+    """
+    if request.method == "POST":
+        notebook_id = request.POST.get("notebook_id")
+        seconds = request.POST.get("seconds") or 0
+        minutes = request.POST.get("minutes") or 0
+        hours = request.POST.get("hours") or 0
+        start_time = request.POST.get("start_time")
+
+        notebook = get_object_or_404(Notebook, id=notebook_id, project__user=request.user)
+
+        # Build cron expression (for Airflow later)
+        # Example: */minutes * * * *
+        # For now, just save raw values
+        notebook.schedule_seconds = int(seconds)
+        notebook.schedule_minutes = int(minutes)
+        notebook.schedule_hours = int(hours)
+        notebook.start_time = start_time
+        notebook.is_scheduled = True
+        notebook.save()
+
+        # TODO: Integrate with Airflow REST API here to create DAG dynamically
+
+        return redirect("project_detail", project_id=notebook.project.id)
+
+    return JsonResponse({"error": "Invalid request"}, status=400)
+
+
+@csrf_exempt
+@login_required
+def toggle_schedule(request):
+    """
+    Handle the ON/OFF slider for scheduling.
+    """
+    if request.method == "POST":
+        data = json.loads(request.body.decode("utf-8"))
+        notebook_id = data.get("notebook_id")
+        is_scheduled = data.get("is_scheduled")
+
+        notebook = get_object_or_404(Notebook, id=notebook_id, project__user=request.user)
+
+        notebook.is_scheduled = is_scheduled
+        notebook.save()
+
+        # TODO: Enable/disable Airflow DAG via REST API
+
+        return JsonResponse({"status": "success", "scheduled": notebook.is_scheduled})
+
+    return JsonResponse({"error": "Invalid request"}, status=400)

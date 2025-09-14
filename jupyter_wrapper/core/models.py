@@ -33,11 +33,19 @@ class Project(models.Model):
         return self.name
     
 class Notebook(models.Model):
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     project = models.ForeignKey(Project, on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     name = models.CharField(max_length=255)
     file_path = models.CharField(max_length=1024)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # Scheduling fields
+    is_scheduled = models.BooleanField(default=False)
+    schedule_seconds = models.IntegerField(default=0)
+    schedule_minutes = models.IntegerField(default=0)
+    schedule_hours = models.IntegerField(default=0)
+    start_time = models.DateTimeField(null=True, blank=True)
+    airflow_dag_id = models.CharField(max_length=255, null=True, blank=True)
 
     def __str__(self):
         return self.name

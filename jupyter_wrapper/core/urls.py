@@ -12,5 +12,7 @@ urlpatterns = [
     path('logout/', auth_views.LogoutView.as_view(next_page='login'), name='logout'),
     path('project/<int:project_id>/delete/', views.delete_project, name='delete_project'),
     path('notebook/<int:notebook_id>/delete/', views.delete_notebook, name='delete_notebook'),
+    path("schedule_notebook/", views.schedule_notebook, name="schedule_notebook"),
+    path("toggle_schedule/", views.toggle_schedule, name="toggle_schedule"),
 
 ]
