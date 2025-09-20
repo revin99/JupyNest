@@ -2,7 +2,7 @@ from django.shortcuts import render
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import UserCreationForm
 from django.http import JsonResponse
-from .models import Project, Notebook , BusinessGroup
+from .models import Project, Notebook , BusinessGroup , Notebook
 import os
 from nbformat import v4,read,write
 from nbclient import NotebookClient
@@ -11,7 +11,9 @@ from django.conf import settings
 import shutil
 from .forms import ProjectForm, NotebookForm
 from django.views.decorators.csrf import csrf_exempt
-import json
+import json 
+from django.utils import timezone
+from django.template import Template, Context
 
 
 BASE_NOTEBOOK_DIR = os.path.join(os.getcwd(), "user_notebooks")
@@ -172,3 +174,119 @@ def toggle_schedule(request):
         return JsonResponse({"status": "success", "scheduled": notebook.is_scheduled})
 
     return JsonResponse({"error": "Invalid request"}, status=400)
+
+
+# Airflow integration code
+
+AIRFLOW_DAGS_FOLDER = "/mnt/c/Users/revin/Documents/Projects/airflow/dags"
+DAG_TEMPLATE_PATH = "/mnt/c/Users/revin/Documents/Projects/airflow/notebook_dag_template.py"
+
+
+
+def generate_airflow_dag(notebook: Notebook):
+    """
+    Reads the DAG template, replaces placeholders, and writes a DAG file.
+    """
+
+    print("printing if true or not")
+    print(os.path.exists(DAG_TEMPLATE_PATH))  # Should return True
+
+    with open(DAG_TEMPLATE_PATH) as f:
+        template_content = f.read()
+
+    start_time = notebook.start_time or timezone.now()
+    context = {
+        "NOTEBOOK_PATH": notebook.file_path,
+        "OUTPUT_PATH": notebook.file_path.replace(".ipynb", "_output.ipynb"),
+        "DAG_ID": f"notebook_{notebook.id}",
+        "YEAR": start_time.year,
+        "MONTH": start_time.month,
+        "DAY": start_time.day,
+        "HOUR": start_time.hour,
+        "MINUTE": start_time.minute,
+        "HOURS": notebook.schedule_hours,
+        "MINUTES": notebook.schedule_minutes,
+        "SECONDS": notebook.schedule_seconds,
+    }
+
+    template = Template(template_content)
+    rendered_content = template.render(Context(context))
+
+    dag_filename = f"notebook_{notebook.id}.py"
+    dag_path = os.path.join(AIRFLOW_DAGS_FOLDER, dag_filename)
+    with open(dag_path, "w") as f:
+        f.write(rendered_content)
+
+    notebook.airflow_dag_id = f"notebook_{notebook.id}"
+    notebook.save()
+
+
+def schedule_notebook(request):
+    if request.method == "POST":
+        notebook_id = request.POST.get("notebook_id")
+        seconds = int(request.POST.get("seconds") or 0)
+        minutes = int(request.POST.get("minutes") or 0)
+        hours = int(request.POST.get("hours") or 0)
+        start_time = request.POST.get("start_time")  # e.g., "2025-09-20T14:30"
+
+        notebook = Notebook.objects.get(id=notebook_id)
+        
+        # Convert interval to cron or timedelta string
+        if hours == minutes == seconds == 0:
+            schedule_interval = None  # Run manually
+        else:
+            # Using timedelta for simplicity
+            total_seconds = seconds + minutes*60 + hours*3600
+            schedule_interval = f"timedelta(seconds={total_seconds})"
+
+        # Prepare DAG ID and path
+        dag_id = f"notebook_{notebook.id}"
+        notebook_path = notebook.file_path  # full path to .ipynb
+
+        # Read template
+        with open(DAG_TEMPLATE_PATH, "r") as f:
+            template = f.read()
+
+        # Replace placeholders
+        dag_code = template.replace("{{NOTEBOOK_DAG_ID}}", dag_id)\
+                           .replace("{{NOTEBOOK_FILE_PATH}}", notebook_path.replace("\\","/"))\
+                           .replace("{{SCHEDULE_INTERVAL}}", schedule_interval)\
+                           .replace("{{START_DATE}}", start_time.replace("T"," "))
+
+        # Write DAG file
+        dag_file_path = os.path.join(AIRFLOW_DAGS_FOLDER, f"{dag_id}.py")
+        with open(dag_file_path, "w") as f:
+            f.write(dag_code)
+
+        # Update notebook record
+        notebook.is_scheduled = True
+        notebook.schedule_seconds = seconds
+        notebook.schedule_minutes = minutes
+        notebook.schedule_hours = hours
+        notebook.start_time = start_time
+        notebook.airflow_dag_id = dag_id
+        notebook.save()
+
+
+@csrf_exempt
+def toggle_schedule(request):
+    """
+    Toggle the notebook scheduling on/off via the slider.
+    Expects JSON body: { "notebook_id": <id>, "is_scheduled": true/false }
+    """
+    if request.method == "POST":
+        import json
+        data = json.loads(request.body)
+        notebook = get_object_or_404(Notebook, id=data["notebook_id"])
+        notebook.is_scheduled = data["is_scheduled"]
+        notebook.save()
+
+        if notebook.airflow_dag_id:
+            if data["is_scheduled"]:
+                os.system(f"airflow dags unpause {notebook.airflow_dag_id}")
+            else:
+                os.system(f"airflow dags pause {notebook.airflow_dag_id}")
+
+        return JsonResponse({"status": "ok"})
+
+

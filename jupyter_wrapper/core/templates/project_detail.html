@@ -20,18 +20,22 @@
         <div class="col notebook-card">
             <div class="card h-100 shadow-sm border-0 hover-shadow" style="transition: transform 0.15s;">
                 <div class="card-body d-flex flex-column">
-                    <h5 class="card-title text-truncate">{{ notebook.name }}</h5>
-                    <small class="text-muted">Created: {{ notebook.created_at|date:"M d, Y H:i" }}</small>
-                    <small class="text-muted">Owner: {{ notebook.user }}</small>
+                    <div class="d-flex justify-content-between align-items-start mb-2">
+                        <h5 class="card-title text-truncate">{{ notebook.name }}</h5>
+                        <button type="button" class="btn btn-outline-secondary btn-sm p-0" data-bs-toggle="popover" data-bs-html="true" 
+                                data-bs-content="Created: {{ notebook.created_at|date:'M d, Y H:i' }}<br>Owner: {{ notebook.user }}">
+                            <i class="bi bi-info-circle"></i>
+                        </button>
+                    </div>
 
-                    <div class="mt-auto pt-3">
+                    <div class="mt-auto pt-2">
                         <div class="d-flex gap-2">
-                            <a href="{{ notebook.jupyter_url }}" target="_blank" class="btn btn-sm btn-success flex-fill">Open</a>
+                            <a href="{{ notebook.jupyter_url }}" target="_blank" class="btn btn-success btn-sm flex-fill">Open</a>
                             <form method="POST" action="{% url 'delete_notebook' notebook.id %}" class="flex-fill">
                                 {% csrf_token %}
-                                <button type="submit" class="btn btn-sm btn-danger w-100">Delete</button>
+                                <button type="submit" class="btn btn-danger btn-sm w-100">Delete</button>
                             </form>
-                            <button class="btn btn-sm btn-primary flex-fill"
+                            <button class="btn btn-primary btn-sm flex-fill"
                                     data-bs-toggle="modal"
                                     data-bs-target="#scheduleModal"
                                     data-notebook-id="{{ notebook.id }}"
@@ -44,10 +48,7 @@
                         </div>
 
                         <div class="form-check form-switch mt-2">
-                            <input class="form-check-input schedule-toggle"
-                                   type="checkbox"
-                                   data-notebook-id="{{ notebook.id }}"
-                                   {% if notebook.is_scheduled %} checked {% endif %}>
+                            <input class="form-check-input schedule-toggle" type="checkbox" data-notebook-id="{{ notebook.id }}" {% if notebook.is_scheduled %} checked {% endif %}>
                             <label class="form-check-label small">
                                 {% if notebook.is_scheduled %} Scheduled {% else %} Unscheduled {% endif %}
                             </label>
@@ -134,6 +135,12 @@
 <!-- JS -->
 <script>
 document.addEventListener("DOMContentLoaded", function() {
+    // Enable popovers
+    var popoverTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="popover"]'))
+    popoverTriggerList.map(function (popoverTriggerEl) {
+      return new bootstrap.Popover(popoverTriggerEl)
+    })
+
     // Search filter
     const searchInput = document.getElementById('notebookSearch');
     const notebookCards = document.querySelectorAll('.notebook-card');
@@ -178,5 +185,4 @@ document.addEventListener("DOMContentLoaded", function() {
 
 <!-- Bootstrap JS -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-
 {% endblock %}
