@@ -67,12 +67,13 @@ def project_detail(request, project_id):
         group = request.user.group
     project = get_object_or_404(Project, id=project_id, group=group)
     notebooks = Notebook.objects.filter(project=project)
+    schedules = Schedule.objects.filter(project=project).prefetch_related('notebooks')
     form = NotebookForm(project=project)
 
     for nb in notebooks:
         nb.jupyter_url=f"http://localhost:8888/lab/tree/{project.id}/{nb.name}.ipynb"
 
-    return render(request, 'project_detail.html', {'project': project, 'notebooks': notebooks, 'form': form})
+    return render(request, 'project_detail.html', {'project': project, 'notebooks': notebooks, 'schedules': schedules,'form': form})
 
 
 @login_required
@@ -256,64 +257,55 @@ def notebook_run_update(request):
 
 def create_schedule(request, project_id):
     if request.method == "POST":
-        project = get_object_or_404(Project, id=project_id)
-
-        # Get form data
-        schedule_name = request.POST.get("schedule_name", "").strip()  # Ensure name is not empty or whitespace
-        notebook_ids = request.POST.getlist("notebooks")  # ordered
-        seconds = int(request.POST.get("seconds") or 0)
-        minutes = int(request.POST.get("minutes") or 0)
+        project = Project.objects.get(id=project_id)
+        schedule_name = request.POST.get("schedule_name") or f"Schedule_{timezone.now().strftime('%Y%m%d_%H%M%S')}"
+        notebook_ids = request.POST.getlist("notebooks")  # should be ordered
         hours = int(request.POST.get("hours") or 0)
+        minutes = int(request.POST.get("minutes") or 0)
+        seconds = int(request.POST.get("seconds") or 0)
         start_time_str = request.POST.get("start_time")
-
-        # Validate schedule name
-        if not schedule_name:
-            return HttpResponse("Schedule name is required.", status=400)
-
-        if not notebook_ids:
-            return HttpResponse("Please select at least one notebook.", status=400)
-
-        # Convert start_time string to datetime
         start_time = parse_datetime(start_time_str)
-        if not start_time:
-            return HttpResponse("Invalid start time format", status=400)
 
-        # Convert to cron expression
-        cron = f"{start_time.minute} {start_time.hour} */{hours or 1} * *"
+        # convert to cron: only using hours/minutes
+        cron_expression = f"{start_time.minute + minutes} {start_time.hour + hours} * * *"
 
-        # Create Schedule entry
         schedule = Schedule.objects.create(
             project=project,
             name=schedule_name,
             start_time=start_time,
-            cron_expression=cron
+            cron_expression=cron_expression
         )
 
-        # Add steps in order
-        for idx, notebook_id in enumerate(notebook_ids):
-            notebook = get_object_or_404(Notebook, id=notebook_id)
-            ScheduleStep.objects.create(
-                schedule=schedule,
-                notebook=notebook,
-                order=idx + 1
-            )
+        # add notebooks in sequence
+        for idx, nb_id in enumerate(notebook_ids, start=1):
+            nb = Notebook.objects.get(id=nb_id)
+            ScheduleStep.objects.create(schedule=schedule, notebook=nb, order=idx)
 
-        # Create DAG file
-        with open(DAG_TEMPLATE_PATH_SEQ, "r") as f:
-            template_content = f.read()
+        # generate DAG file
+        with open(DAG_TEMPLATE_PATH) as f:
+            template = f.read()
 
-        # Replace placeholders
-        dag_content = template_content.replace("{{DAG_ID}}", f"schedule_{schedule.id}") \
-                                      .replace("{{CRON_EXPRESSION}}", cron) \
-                                      .replace("{{NOTEBOOK_IDS}}", str(notebook_ids)) \
-                                      .replace("{{SCHEDULE_NAME}}", schedule_name)
+        tasks_code = ""
+        for idx, nb_id in enumerate(notebook_ids, start=1):
+            nb = Notebook.objects.get(id=nb_id)
+            tasks_code += f"""
+task_{idx} = PythonOperator(
+    task_id='notebook_{nb.id}',
+    python_callable=run_notebook,
+    op_args=['{nb.file_path}'],
+    dag=dag
+)
+"""
 
-        # Save DAG file
-        dag_filename = f"schedule_{schedule.id}.py"
-        dag_path = os.path.join(AIRFLOW_DAGS_FOLDER, dag_filename)
-        with open(dag_path, "w") as f:
-            f.write(dag_content)
+        # chain tasks
+        chain_code = ""
+        for idx in range(1, len(notebook_ids)):
+            chain_code += f"task_{idx} >> task_{idx+1}\n"
+
+        dag_code = template.replace("{{CRON}}", cron_expression).replace("{{TASKS}}", tasks_code).replace("{{CHAIN}}", chain_code)
+
+        dag_file_path = os.path.join(AIRFLOW_DAGS_FOLDER, f"{schedule_name}.py")
+        with open(dag_file_path, "w") as f:
+            f.write(dag_code)
 
         return redirect("project_detail", project_id=project.id)
-    else:
-        return HttpResponse("Invalid request", status=405)
