@@ -17,6 +17,7 @@ from datetime import datetime
 from django.utils.dateparse import parse_datetime
 from django.template.loader import render_to_string
 from django.contrib import messages
+import subprocess
 
 
 BASE_NOTEBOOK_DIR = os.path.join(os.getcwd(), "user_notebooks")
@@ -154,87 +155,55 @@ AIRFLOW_DAGS_FOLDER = "/mnt/c/Users/revin/Documents/Projects/airflow/dags"
 DAG_TEMPLATE_PATH = "/mnt/c/Users/revin/Documents/Projects/airflow/notebook_dag_template.py"
 DAG_TEMPLATE_PATH_SEQ = "/mnt/c/Users/revin/Documents/Projects/airflow/notebook_sequence_dag_template.py"
 
-def convert_to_cron(seconds, minutes, hours, start_time):
-    """
-    Convert user input into a cron expression.
-    Airflow supports cron format like: '0 30 * * *' (min, hour, dom, month, dow)
-    We'll ignore seconds because cron only supports minutes and above.
-    """
-    start_dt = parse_datetime(start_time)
-    if not start_dt:
-        start_dt = None
-
-    cron_minute = (start_dt.minute if start_dt else 0) + int(minutes)
-    cron_hour = (start_dt.hour if start_dt else 0) + int(hours)
-    # For simplicity, we will ignore seconds in cron
-    cron_expression = f"{cron_minute} {cron_hour} * * *"
-    return cron_expression
-
-def create_dag_file(notebook):
-    # Read template
-    with open(DAG_TEMPLATE_PATH, "r") as f:
-        template = f.read()
-
-    # Convert to cron
-    cron_expression = convert_to_cron(
-        notebook.schedule_seconds,
-        notebook.schedule_minutes,
-        notebook.schedule_hours,
-        notebook.start_time.isoformat() if notebook.start_time else ""
-    )
-
-    # Replace placeholders
-    content = template.replace("{{NOTEBOOK_ID}}", str(notebook.id))
-    content = content.replace("{{CRON_EXPRESSION}}", cron_expression)
-    content = content.replace("{{NOTEBOOK_PATH}}", notebook.file_path)
-
-    # Save to DAGs folder
-    dag_file_path = os.path.join(AIRFLOW_DAGS_FOLDER, f"notebook_{notebook.id}.py")
-    with open(dag_file_path, "w") as f:
-        f.write(content)
-
-    return dag_file_path
-
 def schedule_notebook(request):
     if request.method == "POST":
         notebook_id = request.POST.get("notebook_id")
-        notebook = get_object_or_404(Notebook, id=notebook_id)
+        seconds = request.POST.get("seconds") or "0"
+        minutes = request.POST.get("minutes") or "0"
+        hours = request.POST.get("hours") or "0"
+        start_time = request.POST.get("start_time")
 
-        # Get schedule from form
-        seconds = int(request.POST.get("seconds", 0))
-        minutes = int(request.POST.get("minutes", 0))
-        hours = int(request.POST.get("hours", 0))
-        start_time = request.POST.get("start_time")  # 'YYYY-MM-DDTHH:MM'
+        # Build cron expression
+        cron_expression = f"{minutes} {hours} * * *"
 
-        # Convert to cron (Airflow ignores seconds)
-        cron_expr = f"{minutes} {hours} * * *"
+        # Get notebook instance
+        from .models import Notebook
+        notebook = Notebook.objects.get(id=notebook_id)
+
+        dag_id = f"notebook_{notebook.id}"
+        notebook_path = notebook.file_path
+        output_path = f"/tmp/{notebook.name}_output.ipynb"
 
         # Read template
         with open(DAG_TEMPLATE_PATH, "r") as f:
             template = f.read()
 
         # Replace placeholders
-        dag_content = template.replace("{{ NOTEBOOK_ID }}", str(notebook.id)) \
-                              .replace("{{ NOTEBOOK_PATH }}", notebook.file_path) \
-                              .replace("{{ CRON_EXPRESSION }}", cron_expr) \
-                              .replace("{{ START_TIME }}", start_time if start_time else "None")
+        dag_content = (
+            template
+            .replace("{{ dag_id }}", dag_id)
+            .replace("{{ cron_expression }}", cron_expression)
+            .replace("{{ notebook_path }}", notebook_path)
+            .replace("{{ output_path }}", output_path)
+        )
 
-        # Write DAG file
-        dag_filename = f"notebook_{notebook.id}.py"
-        dag_path = os.path.join(AIRFLOW_DAGS_FOLDER, dag_filename)
-        with open(dag_path, "w") as f:
+        # Save DAG into Airflow dags folder
+        dag_file_path = os.path.join(AIRFLOW_DAGS_FOLDER, f"{dag_id}.py")
+        with open(dag_file_path, "w") as f:
             f.write(dag_content)
 
-        # Update notebook record
+        # Save scheduling info on Notebook
         notebook.is_scheduled = True
-        notebook.schedule_hours = hours
-        notebook.schedule_minutes = minutes
-        notebook.schedule_seconds = seconds
-        notebook.start_time = start_time if start_time else None
-        notebook.airflow_dag_id = f"notebook_{notebook.id}"
+        notebook.schedule_seconds = int(seconds)
+        notebook.schedule_minutes = int(minutes)
+        notebook.schedule_hours = int(hours)
+        if start_time:
+            notebook.start_time = parse_datetime(start_time)
+        notebook.airflow_dag_id = dag_id
         notebook.save()
 
         return redirect("project_detail", project_id=notebook.project.id)
+    return HttpResponse("Invalid request", status=400)
     
 @csrf_exempt
 def notebook_run_create(request):
@@ -259,21 +228,26 @@ def create_schedule(request, project_id):
     if request.method == "POST":
         project = Project.objects.get(id=project_id)
         schedule_name = request.POST.get("schedule_name") or f"Schedule_{timezone.now().strftime('%Y%m%d_%H%M%S')}"
-        notebook_ids = request.POST.getlist("notebooks")  # should be ordered
+        notebook_ids = request.POST.getlist("notebooks")  # ordered
+
         hours = int(request.POST.get("hours") or 0)
         minutes = int(request.POST.get("minutes") or 0)
-        seconds = int(request.POST.get("seconds") or 0)
         start_time_str = request.POST.get("start_time")
-        start_time = parse_datetime(start_time_str)
 
-        # convert to cron: only using hours/minutes
-        cron_expression = f"{start_time.minute + minutes} {start_time.hour + hours} * * *"
+        # parse start time safely
+        start_time = parse_datetime(start_time_str) if start_time_str else timezone.now()
 
+        # build cron expression (hour + min only)
+        cron_minute = (start_time.minute + minutes) % 60
+        cron_hour = (start_time.hour + hours + (start_time.minute + minutes) // 60) % 24
+        cron_expression = f"{cron_minute} {cron_hour} * * *"
+
+        # Save Schedule in DB
         schedule = Schedule.objects.create(
             project=project,
             name=schedule_name,
             start_time=start_time,
-            cron_expression=cron_expression
+            cron_expression=cron_expression,
         )
 
         # add notebooks in sequence
@@ -281,31 +255,81 @@ def create_schedule(request, project_id):
             nb = Notebook.objects.get(id=nb_id)
             ScheduleStep.objects.create(schedule=schedule, notebook=nb, order=idx)
 
-        # generate DAG file
-        with open(DAG_TEMPLATE_PATH) as f:
+        # Load schedule DAG template
+        with open(DAG_TEMPLATE_PATH_SEQ) as f:
             template = f.read()
 
+        # Build tasks code dynamically
         tasks_code = ""
         for idx, nb_id in enumerate(notebook_ids, start=1):
             nb = Notebook.objects.get(id=nb_id)
             tasks_code += f"""
-task_{idx} = PythonOperator(
-    task_id='notebook_{nb.id}',
-    python_callable=run_notebook,
-    op_args=['{nb.file_path}'],
-    dag=dag
-)
+    task_{idx} = PythonOperator(
+        task_id='notebook_{nb.id}',
+        python_callable=run_notebook,
+        op_args=['{nb.file_path}', {nb.id}],
+        dag=dag
+    )
 """
 
-        # chain tasks
+        # Build chain code
         chain_code = ""
         for idx in range(1, len(notebook_ids)):
-            chain_code += f"task_{idx} >> task_{idx+1}\n"
+            chain_code += f"    task_{idx} >> task_{idx+1}\n"
 
-        dag_code = template.replace("{{CRON}}", cron_expression).replace("{{TASKS}}", tasks_code).replace("{{CHAIN}}", chain_code)
+        # Final DAG code
+        dag_id = f"schedule_{schedule.id}"
+        dag_code = (
+            template.replace("{{DAG_ID}}", dag_id)
+                    .replace("{{CRON}}", cron_expression)
+                    .replace("{{TASKS}}", tasks_code)
+                    .replace("{{CHAIN}}", chain_code)
+        )
 
-        dag_file_path = os.path.join(AIRFLOW_DAGS_FOLDER, f"{schedule_name}.py")
+        # Save DAG file in airflow dags folder
+        dag_file_path = os.path.join(AIRFLOW_DAGS_FOLDER, f"{dag_id}.py")
         with open(dag_file_path, "w") as f:
             f.write(dag_code)
 
         return redirect("project_detail", project_id=project.id)
+
+
+    
+
+# Run Now
+def run_schedule_now(request, schedule_id):
+    schedule = get_object_or_404(Schedule, id=schedule_id)
+
+    if request.method == "POST":
+        try:
+            # Trigger DAG immediately in Airflow
+            dag_id = f"schedule_{schedule.id}"
+            subprocess.run(
+                ["airflow", "dags", "trigger", dag_id],
+                check=True
+            )
+            messages.success(request, f"Schedule '{schedule.name}' triggered successfully.")
+        except subprocess.CalledProcessError as e:
+            messages.error(request, f"Failed to trigger schedule: {e}")
+    return redirect("project_detail", project_id=schedule.project.id)
+
+
+# Delete Schedule
+def delete_schedule(request, schedule_id):
+    schedule = get_object_or_404(Schedule, id=schedule_id)
+    project_id = schedule.project.id
+    if request.method == "POST":
+        schedule.delete()
+        messages.success(request, f"Schedule '{schedule.name}' deleted successfully.")
+    return redirect("project_detail", project_id=project_id)
+
+
+def edit_schedule(request, schedule_id):
+    schedule = get_object_or_404(Schedule, id=schedule_id)
+    if request.method == "POST":
+        schedule.name = request.POST.get("name")
+        schedule.start_time = request.POST.get("start_time") or schedule.start_time
+        schedule.cron_expression = request.POST.get("cron_expression")
+        schedule.save()
+        messages.success(request, f"Schedule '{schedule.name}' updated successfully.")
+        return redirect("project_detail", project_id=schedule.project.id)
