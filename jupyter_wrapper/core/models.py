@@ -71,6 +71,7 @@ class Schedule(models.Model):
     project = models.ForeignKey(Project, on_delete=models.CASCADE)
     name = models.CharField(max_length=255)
     notebooks = models.ManyToManyField(Notebook, through='ScheduleStep', related_name='schedules')
+    cron_expression = models.CharField(max_length=255, blank=True, null=True)
     start_time = models.DateTimeField()
     schedule_seconds = models.IntegerField(default=0)
     schedule_minutes = models.IntegerField(default=0)

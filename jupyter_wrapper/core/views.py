@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import UserCreationForm
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
 from .models import Project, Notebook , BusinessGroup , Notebook , NotebookRun, ScheduleStep, Schedule
 import os
 from nbformat import v4,read,write
@@ -151,7 +151,7 @@ def toggle_schedule(request):
 
 AIRFLOW_DAGS_FOLDER = "/mnt/c/Users/revin/Documents/Projects/airflow/dags"
 DAG_TEMPLATE_PATH = "/mnt/c/Users/revin/Documents/Projects/airflow/notebook_dag_template.py"
-DAG_TEMPLATE_PATH = "/mnt/c/Users/revin/Documents/Projects/airflow/notebook_sequence_dag_template.py"
+DAG_TEMPLATE_PATH_SEQ = "/mnt/c/Users/revin/Documents/Projects/airflow/notebook_sequence_dag_template.py"
 
 def convert_to_cron(seconds, minutes, hours, start_time):
     """
@@ -253,58 +253,67 @@ def notebook_run_update(request):
     return JsonResponse({"success": True})
 
 
+
 def create_schedule(request, project_id):
-    project = get_object_or_404(Project, id=project_id)
-
     if request.method == "POST":
-        notebook_ids = request.POST.getlist("notebooks")
-        schedule_name = request.POST.get("schedule_name")
-        hours = int(request.POST.get("hours", 0))
-        minutes = int(request.POST.get("minutes", 0))
-        seconds = int(request.POST.get("seconds", 0))
-        start_time = request.POST.get("start_time")  # string from datetime-local
+        project = get_object_or_404(Project, id=project_id)
 
-        # Validate notebooks selection
+        # Get form data
+        schedule_name = request.POST.get("schedule_name", "").strip()  # Ensure name is not empty or whitespace
+        notebook_ids = request.POST.getlist("notebooks")  # ordered
+        seconds = int(request.POST.get("seconds") or 0)
+        minutes = int(request.POST.get("minutes") or 0)
+        hours = int(request.POST.get("hours") or 0)
+        start_time_str = request.POST.get("start_time")
+
+        # Validate schedule name
+        if not schedule_name:
+            return HttpResponse("Schedule name is required.", status=400)
+
         if not notebook_ids:
-            messages.error(request, "You must select at least one notebook for the schedule.")
-            return redirect("project_detail", pk=project.id)
+            return HttpResponse("Please select at least one notebook.", status=400)
 
-        notebooks = Notebook.objects.filter(id__in=notebook_ids)
+        # Convert start_time string to datetime
+        start_time = parse_datetime(start_time_str)
+        if not start_time:
+            return HttpResponse("Invalid start time format", status=400)
 
-        # Create schedule entry in DB
+        # Convert to cron expression
+        cron = f"{start_time.minute} {start_time.hour} */{hours or 1} * *"
+
+        # Create Schedule entry
         schedule = Schedule.objects.create(
             project=project,
             name=schedule_name,
-            notebooks=list(notebooks),
-            schedule_hours=hours,
-            schedule_minutes=minutes,
-            schedule_seconds=seconds,
             start_time=start_time,
+            cron_expression=cron
         )
 
-        # Generate cron expression
-        cron_expr = f"{seconds} {minutes} {hours} * * *"  # simple example
-        dag_filename = f"{schedule_name.replace(' ', '_')}.py"
-        dag_path = os.path.join(AIRFLOW_DAGS_FOLDER, dag_filename)
+        # Add steps in order
+        for idx, notebook_id in enumerate(notebook_ids):
+            notebook = get_object_or_404(Notebook, id=notebook_id)
+            ScheduleStep.objects.create(
+                schedule=schedule,
+                notebook=notebook,
+                order=idx + 1
+            )
 
-        # Read DAG template
-        with open(DAG_TEMPLATE_PATH, "r") as f:
+        # Create DAG file
+        with open(DAG_TEMPLATE_PATH_SEQ, "r") as f:
             template_content = f.read()
 
-        # Build list of notebook paths for DAG
-        notebook_paths = [nb.file_path for nb in notebooks]
+        # Replace placeholders
+        dag_content = template_content.replace("{{DAG_ID}}", f"schedule_{schedule.id}") \
+                                      .replace("{{CRON_EXPRESSION}}", cron) \
+                                      .replace("{{NOTEBOOK_IDS}}", str(notebook_ids)) \
+                                      .replace("{{SCHEDULE_NAME}}", schedule_name)
 
-        # Replace template placeholders
-        dag_content = template_content.replace("{{DAG_NAME}}", schedule_name)
-        dag_content = dag_content.replace("{{CRON_EXPRESSION}}", cron_expr)
-        dag_content = dag_content.replace("{{NOTEBOOK_PATHS}}", str(notebook_paths))
-
-        # Write DAG file
+        # Save DAG file
+        dag_filename = f"schedule_{schedule.id}.py"
+        dag_path = os.path.join(AIRFLOW_DAGS_FOLDER, dag_filename)
         with open(dag_path, "w") as f:
             f.write(dag_content)
 
-        messages.success(request, f"Schedule '{schedule_name}' created and DAG generated successfully!")
-        return redirect("project_detail", pk=project.id)
-
-    # GET request fallback
-    return redirect("project_detail", pk=project.id)
+        return redirect("project_detail", project_id=project.id)
+    else:
+        return HttpResponse("Invalid request", status=405)
