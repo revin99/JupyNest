@@ -14,5 +14,6 @@ urlpatterns = [
     path('notebook/<int:notebook_id>/delete/', views.delete_notebook, name='delete_notebook'),
     path("schedule_notebook/", views.schedule_notebook, name="schedule_notebook"),
     path("toggle_schedule/", views.toggle_schedule, name="toggle_schedule"),
+    path('project/<int:project_id>/create_schedule/', views.create_schedule, name='create_schedule'),
 
 ]

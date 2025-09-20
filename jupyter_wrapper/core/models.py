@@ -65,3 +65,19 @@ class NotebookRun(models.Model):
 
     def __str__(self):
         return f"{self.notebook.name} - {self.status} - {self.started_at}"
+    
+
+class Schedule(models.Model):
+    project = models.ForeignKey(Project, on_delete=models.CASCADE)
+    name = models.CharField(max_length=255)
+    notebooks = models.ManyToManyField(Notebook, through='ScheduleStep', related_name='schedules')
+    start_time = models.DateTimeField()
+    schedule_seconds = models.IntegerField(default=0)
+    schedule_minutes = models.IntegerField(default=0)
+    schedule_hours = models.IntegerField(default=0)
+    airflow_dag_id = models.CharField(max_length=255, blank=True, null=True)
+
+class ScheduleStep(models.Model):
+    schedule = models.ForeignKey(Schedule, on_delete=models.CASCADE)
+    notebook = models.ForeignKey(Notebook, on_delete=models.CASCADE)
+    order = models.PositiveIntegerField()
