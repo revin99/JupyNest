@@ -49,3 +49,19 @@ class Notebook(models.Model):
 
     def __str__(self):
         return self.name
+    
+
+class NotebookRun(models.Model):
+    notebook = models.ForeignKey(Notebook, on_delete=models.CASCADE, related_name='runs')
+    status_choices = [
+        ('PENDING', 'Pending'),
+        ('SUCCESS', 'Success'),
+        ('FAIL', 'Fail')
+    ]
+    status = models.CharField(max_length=10, choices=status_choices, default='PENDING')
+    started_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    log = models.TextField(blank=True)  # optional: store stdout or error messages
+
+    def __str__(self):
+        return f"{self.notebook.name} - {self.status} - {self.started_at}"

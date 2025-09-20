@@ -13,7 +13,10 @@ from .forms import ProjectForm, NotebookForm
 from django.views.decorators.csrf import csrf_exempt
 import json 
 from django.utils import timezone
-from django.template import Template, Context
+from datetime import datetime
+from django.utils.dateparse import parse_datetime
+from django.template.loader import render_to_string
+from django.contrib import messages
 
 
 BASE_NOTEBOOK_DIR = os.path.join(os.getcwd(), "user_notebooks")
@@ -122,36 +125,6 @@ def delete_notebook(request, notebook_id):
     notebook.delete()
     return redirect('project_detail', project_id=notebook.project.id)
 
-@login_required
-def schedule_notebook(request):
-    """
-    Handle the schedule modal form submission.
-    """
-    if request.method == "POST":
-        notebook_id = request.POST.get("notebook_id")
-        seconds = request.POST.get("seconds") or 0
-        minutes = request.POST.get("minutes") or 0
-        hours = request.POST.get("hours") or 0
-        start_time = request.POST.get("start_time")
-
-        notebook = get_object_or_404(Notebook, id=notebook_id, project__user=request.user)
-
-        # Build cron expression (for Airflow later)
-        # Example: */minutes * * * *
-        # For now, just save raw values
-        notebook.schedule_seconds = int(seconds)
-        notebook.schedule_minutes = int(minutes)
-        notebook.schedule_hours = int(hours)
-        notebook.start_time = start_time
-        notebook.is_scheduled = True
-        notebook.save()
-
-        # TODO: Integrate with Airflow REST API here to create DAG dynamically
-
-        return redirect("project_detail", project_id=notebook.project.id)
-
-    return JsonResponse({"error": "Invalid request"}, status=400)
-
 
 @csrf_exempt
 @login_required
@@ -176,117 +149,87 @@ def toggle_schedule(request):
     return JsonResponse({"error": "Invalid request"}, status=400)
 
 
-# Airflow integration code
-
 AIRFLOW_DAGS_FOLDER = "/mnt/c/Users/revin/Documents/Projects/airflow/dags"
 DAG_TEMPLATE_PATH = "/mnt/c/Users/revin/Documents/Projects/airflow/notebook_dag_template.py"
 
-
-
-def generate_airflow_dag(notebook: Notebook):
+def convert_to_cron(seconds, minutes, hours, start_time):
     """
-    Reads the DAG template, replaces placeholders, and writes a DAG file.
+    Convert user input into a cron expression.
+    Airflow supports cron format like: '0 30 * * *' (min, hour, dom, month, dow)
+    We'll ignore seconds because cron only supports minutes and above.
     """
+    start_dt = parse_datetime(start_time)
+    if not start_dt:
+        start_dt = None
 
-    print("printing if true or not")
-    print(os.path.exists(DAG_TEMPLATE_PATH))  # Should return True
+    cron_minute = (start_dt.minute if start_dt else 0) + int(minutes)
+    cron_hour = (start_dt.hour if start_dt else 0) + int(hours)
+    # For simplicity, we will ignore seconds in cron
+    cron_expression = f"{cron_minute} {cron_hour} * * *"
+    return cron_expression
 
-    with open(DAG_TEMPLATE_PATH) as f:
-        template_content = f.read()
+def create_dag_file(notebook):
+    # Read template
+    with open(DAG_TEMPLATE_PATH, "r") as f:
+        template = f.read()
 
-    start_time = notebook.start_time or timezone.now()
-    context = {
-        "NOTEBOOK_PATH": notebook.file_path,
-        "OUTPUT_PATH": notebook.file_path.replace(".ipynb", "_output.ipynb"),
-        "DAG_ID": f"notebook_{notebook.id}",
-        "YEAR": start_time.year,
-        "MONTH": start_time.month,
-        "DAY": start_time.day,
-        "HOUR": start_time.hour,
-        "MINUTE": start_time.minute,
-        "HOURS": notebook.schedule_hours,
-        "MINUTES": notebook.schedule_minutes,
-        "SECONDS": notebook.schedule_seconds,
-    }
+    # Convert to cron
+    cron_expression = convert_to_cron(
+        notebook.schedule_seconds,
+        notebook.schedule_minutes,
+        notebook.schedule_hours,
+        notebook.start_time.isoformat() if notebook.start_time else ""
+    )
 
-    template = Template(template_content)
-    rendered_content = template.render(Context(context))
+    # Replace placeholders
+    content = template.replace("{{NOTEBOOK_ID}}", str(notebook.id))
+    content = content.replace("{{CRON_EXPRESSION}}", cron_expression)
+    content = content.replace("{{NOTEBOOK_PATH}}", notebook.file_path)
 
-    dag_filename = f"notebook_{notebook.id}.py"
-    dag_path = os.path.join(AIRFLOW_DAGS_FOLDER, dag_filename)
-    with open(dag_path, "w") as f:
-        f.write(rendered_content)
+    # Save to DAGs folder
+    dag_file_path = os.path.join(AIRFLOW_DAGS_FOLDER, f"notebook_{notebook.id}.py")
+    with open(dag_file_path, "w") as f:
+        f.write(content)
 
-    notebook.airflow_dag_id = f"notebook_{notebook.id}"
-    notebook.save()
-
+    return dag_file_path
 
 def schedule_notebook(request):
     if request.method == "POST":
         notebook_id = request.POST.get("notebook_id")
-        seconds = int(request.POST.get("seconds") or 0)
-        minutes = int(request.POST.get("minutes") or 0)
-        hours = int(request.POST.get("hours") or 0)
-        start_time = request.POST.get("start_time")  # e.g., "2025-09-20T14:30"
+        notebook = get_object_or_404(Notebook, id=notebook_id)
 
-        notebook = Notebook.objects.get(id=notebook_id)
-        
-        # Convert interval to cron or timedelta string
-        if hours == minutes == seconds == 0:
-            schedule_interval = None  # Run manually
-        else:
-            # Using timedelta for simplicity
-            total_seconds = seconds + minutes*60 + hours*3600
-            schedule_interval = f"timedelta(seconds={total_seconds})"
+        # Get schedule from form
+        seconds = int(request.POST.get("seconds", 0))
+        minutes = int(request.POST.get("minutes", 0))
+        hours = int(request.POST.get("hours", 0))
+        start_time = request.POST.get("start_time")  # 'YYYY-MM-DDTHH:MM'
 
-        # Prepare DAG ID and path
-        dag_id = f"notebook_{notebook.id}"
-        notebook_path = notebook.file_path  # full path to .ipynb
+        # Convert to cron (Airflow ignores seconds)
+        cron_expr = f"{minutes} {hours} * * *"
 
         # Read template
         with open(DAG_TEMPLATE_PATH, "r") as f:
             template = f.read()
 
         # Replace placeholders
-        dag_code = template.replace("{{NOTEBOOK_DAG_ID}}", dag_id)\
-                           .replace("{{NOTEBOOK_FILE_PATH}}", notebook_path.replace("\\","/"))\
-                           .replace("{{SCHEDULE_INTERVAL}}", schedule_interval)\
-                           .replace("{{START_DATE}}", start_time.replace("T"," "))
+        dag_content = template.replace("{{ NOTEBOOK_ID }}", str(notebook.id)) \
+                              .replace("{{ NOTEBOOK_PATH }}", notebook.file_path) \
+                              .replace("{{ CRON_EXPRESSION }}", cron_expr) \
+                              .replace("{{ START_TIME }}", start_time if start_time else "None")
 
         # Write DAG file
-        dag_file_path = os.path.join(AIRFLOW_DAGS_FOLDER, f"{dag_id}.py")
-        with open(dag_file_path, "w") as f:
-            f.write(dag_code)
+        dag_filename = f"notebook_{notebook.id}.py"
+        dag_path = os.path.join(AIRFLOW_DAGS_FOLDER, dag_filename)
+        with open(dag_path, "w") as f:
+            f.write(dag_content)
 
         # Update notebook record
         notebook.is_scheduled = True
-        notebook.schedule_seconds = seconds
-        notebook.schedule_minutes = minutes
         notebook.schedule_hours = hours
-        notebook.start_time = start_time
-        notebook.airflow_dag_id = dag_id
+        notebook.schedule_minutes = minutes
+        notebook.schedule_seconds = seconds
+        notebook.start_time = start_time if start_time else None
+        notebook.airflow_dag_id = f"notebook_{notebook.id}"
         notebook.save()
 
-
-@csrf_exempt
-def toggle_schedule(request):
-    """
-    Toggle the notebook scheduling on/off via the slider.
-    Expects JSON body: { "notebook_id": <id>, "is_scheduled": true/false }
-    """
-    if request.method == "POST":
-        import json
-        data = json.loads(request.body)
-        notebook = get_object_or_404(Notebook, id=data["notebook_id"])
-        notebook.is_scheduled = data["is_scheduled"]
-        notebook.save()
-
-        if notebook.airflow_dag_id:
-            if data["is_scheduled"]:
-                os.system(f"airflow dags unpause {notebook.airflow_dag_id}")
-            else:
-                os.system(f"airflow dags pause {notebook.airflow_dag_id}")
-
-        return JsonResponse({"status": "ok"})
-
-
+        return redirect("project_detail", project_id=notebook.project.id)
